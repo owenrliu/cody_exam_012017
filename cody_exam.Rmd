@@ -1,0 +1,380 @@
+---
+title: "Cody Exam Question"
+author: "Owen Liu"
+date: "January 20, 2017"
+output: pdf_document
+---
+
+## Age Structured Urchin Population Model
+
+The red sea urchin *Mesocentrotus franciscanus* (formerly *Strongylocentrotus franciscanus*) is a species of high commercial value along much of the west coast of the United States. Its biology has been studied for decades, but the commercial fishery for *M. franciscanus* has spurred more recent investigation into the interaction of the species' biology with exploitation. Furthermore, as the waters along the west coast adapt to climate change and gradual warming, the effect on *M. franciscanus* and its fishery are not well known. In order to better understand how potential changes in the biology of this species may affect its fishery (and therefore, appropriate management strategies), the following develops an age-structured yield-per-recruit analysis. The base model is then used to examine potential effects of changes in biology.
+
+```{r setup, include=FALSE,message=F}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+```
+
+
+## Model Construction
+
+This is an age-structured model, where population is structured into $\omega$ age classes, and abundance denoted by $\textbf{N} = (N_{1},...,N_{\omega})$. Each age class is subject to natural mortality, and potentially to fishing.
+
+```{r params}
+max.age <- 30 # max age class (number of age classes will be this plus 1 (for age 0)
+ages <- 0:max.age # the age classes
+surv <- 0.9 # natural survival of post-settlers
+mort <- 1-surv # natural mortality of post-settlers
+
+
+# Fishing parameters
+fish <- 0 # as a default, harvest rate is zero
+size.limit <- 8.3 #size limit in cm
+
+# Richards growth parameters
+Dinfinity <- 9.31 #L infinity, asymptotic length
+growthrate <- 0.0926 #growth rate
+shape <- -0.3208 #shape parameter
+growth.params <- c(Dinfinity,growthrate,shape) # all params together
+
+# Length at maturity
+length_mat <- 7
+
+# weight-at-size parameters, of the form a*L^b
+dw.a <- 0.0012659
+dw.b <- 2.7068
+```
+
+## Growth
+
+Growth in this population follows a Richards functional form (Richards 1959) for red sea urchins described and parameterized by Ebert and Russell (1992). It relates test diameter ($D$) to age in years by the form:
+$$D_{t} = D_\infty(1-e^{-Kt})^{-n}$$
+where $D_{t}$ is test diameter in cm, $D_\infty$ is asymptotic test diameter, $t$ is time in years, $K$ is the growth rate constant (in units time^-1), and $n$ is the shape parameter.
+
+```{r growth fxn, message=F, warning=F}
+# Growth function
+Dt <- function(Dinf, K, n=shape,age.vec) {Dinf*(1-exp(-K*age.vec))^(-n)}
+
+# Plot of shape
+growth <- data.frame(age=seq(0,25,by=0.25),Dt=Dt(Dinf=Dinfinity,K=growthrate,n=shape,
+                                                 age.vec=seq(0,25,by=0.25)))
+plot(growth$age,growth$Dt,xlab="Age (yr)",ylab="Test Diameter",
+     xlim=c(0,25),ylim=c(1,10),type="l",main="Urchin Growth")
+```
+
+
+
+## Unfished numbers-at-age
+At equilibrium, unfished numbers at age are just equal to:
+$$N_{0} = R_{0}$$
+$$N_{i+1} = N_{i}S, 1\leq{i}\leq{\omega-2}$$
+$$N_{\omega} = \frac{S}{1-S}N_{\omega-1}$$
+where $S$ is annual survival, $\omega$ is the maximum age (plus group), and $R_{0}$ is equilibrium unfished recruits
+
+```{r unfished}
+n0 <- function(ninit,surv) {
+  out <- numeric(length=max.age+1)
+  out[1] <- ninit # initial population
+  
+  # every year, a certain proportion survive
+  for(i in 1:(length(out)-2)) out[i+1] <- out[i]*surv 
+  out[length(out)] <- surv/(1-surv)*out[length(out)-1] # plus group survival
+  return(out)
+}
+n0(1,surv=surv)
+```
+
+
+#### Weight-at-age
+Weight at age is calculated by first converting age to diameter, then using the relationship $W=aL^{b}$ to calculate a vector of weights.  Weight-at-age is used to calculate spawning stock biomass and biomass yield for fisheries. Default values taken from Campbell (1998).
+
+```{r weight at age}
+weight.at.age <- function(g.params,age.vec,dw.a,dw.b) {
+  # first, age to diameter
+  diams <- Dt(Dinf=g.params[1],K=g.params[2],n=g.params[3],age.vec=age.vec)
+  #then, weights-by-diameter. Campbell's values are for mm, so convert cm to mm as well
+  w.vec <- dw.a*(diams*10)^(dw.b)
+  return(w.vec)
+}
+# with our parameters:
+w.vec <- weight.at.age(age.vec=ages,g.params=growth.params,dw.a=dw.a,dw.b=dw.b)
+plot(ages,w.vec,main="Age vs. Weight",type='l',xlab='Age, years',ylab='Weight(g)',
+     xaxs='i')
+```
+
+## Maturity
+Sea urchins become sexually mature at around a diameter of 5.1 cm (California Department of Fish and Wildlife). We'll use knife-edge maturity at 51cm (can vary this value later)
+
+```{r maturity}
+calc_m <- function(g.params,length_mat,age.vec){
+  diams <- Dt(Dinf=g.params[1],K=g.params[2],n=g.params[3],age.vec=age.vec)
+  m.vec <- sapply(diams,function(x)ifelse(x>length_mat,1,0))
+  return(m.vec)
+}
+
+#with our default values
+m.vec <- calc_m(g.params=growth.params,length_mat=length_mat,age.vec=ages)
+plot(ages,m.vec,main="Age vs. Maturity",xlab="Age",ylab="Proportion Mature",type="l")
+
+```
+
+#### Spawning stock biomass per recruit
+Total unfished spawning stock biomass per recruit is just the summed product of weight-at-age and proportional numbers-at-age and maturity-at-age.
+
+$$SBPR_{0} = \sum_{i=1}^{\omega}w_in_im_i$$
+Using the equation for unfished numbers-at-age above and setting $R_{0}$ to 1, we can use this to calculate $SBPR_{0}$, and then $SSB_{0}$, which is just $SSB_{0} = SBPR_{0} * R$
+
+```{r SSB}
+sbpr <- function(w.vec,n.vec,m.vec) sum(w.vec*n.vec*m.vec)
+ssb0 <- function(w.vec,n.vec,R,m.vec) sum(w.vec*n.vec*m.vec) * R 
+
+# When R0 = 1
+m.vec <- calc_m(g.params=growth.params,length_mat=length_mat,age.vec=ages)
+unfished.sbpr <- sbpr(w.vec,n.vec=n0(ninit=1,surv=surv),m.vec=m.vec)
+```
+
+## Selectivity
+
+A selectivity function, denoted $\textbf{q}$ describes how the fishery catches individuals at a given size. Since in the urchin fishery there is a size limit of 8.3 cm, and the urchins are taken by divers (and so very precisely collected) we can just assume "knife-edge" selectivity at the size limit. 
+
+Because it's an age-structured model, we convert age to diameter, and then to proportion vulnerable (1 if greater than the size limit, 0 if less).
+
+```{r selectivity, message=F,warning=F}
+sel <- function(g.params,age.vec,size.limit) {
+  diams <- Dt(Dinf=g.params[1],K=g.params[2],n=g.params[3],age.vec=age.vec)
+  sel.vec <- sapply(diams,function(x) ifelse(x>size.limit,1,0))
+  return(sel.vec)
+}
+q.vec <- sel(g.params=growth.params,age.vec=ages,size.limit = size.limit)
+
+# Plot with default values
+plot(0:max.age,q.vec,main="Age vs. Selectivity",type='l',xlab='Age, yr',
+     ylab='Selectivity (proportion)',xaxs='i')
+```
+
+## Calculate Population Size 
+Calculate equilibrium numbers-at-age for a given harvest rate and using the selectivity above. This is analogous to the unfished situation, adding fishing as a modifier of numbers-at-age
+$$N_{0} = R$$
+$$N_{i+1} = N_{i}S(1-q_{i}u), 1\leq{i}\leq{\omega-2}$$
+$$N_{\omega} = \frac{S(1-q_{\omega}u)}{1-S(1-q_{\omega}u)}N_{\omega-1}$$
+where $q$ is selectivity-at-age and $u$ is harvest rate
+
+```{r surv}
+pop.size <- function(R,fish, surv,g.params,age.vec,size.limit) {
+  # First recalculate the selectivity vector
+  q.vec <- sel(g.params=g.params,age.vec=age.vec,size.limit = size.limit)
+  
+  out <- numeric(length=max.age+1)
+  out[1] <- R # initial population
+  
+  for(i in 1:(length(out)-2)) out[i+1] <- out[i]*surv*(1-q.vec[i]*fish)
+  
+  out[length(out)] <- surv*(1-q.vec[i]*fish)/(1-surv*(1-q.vec[i]*fish))*out[length(out)-1]
+  
+  return(out)
+}
+
+## with our parameters:
+p.vec <- pop.size (R=100000,fish=fish,surv=surv,g.params=growth.params,
+                   age.vec=ages,size.limit=size.limit)
+plot(0:max.age,p.vec,main="Age vs. Numbers, Harvest Rate = 0",
+     type='l',xlab='Age, years',ylab='Number of Individuals', yaxt="n",
+     xaxs='i')
+```
+
+#### Fisheries Yield
+
+Under the fished scenario, SBPR is the same as it was before (sum of numbers-at-age time weight-at-age). Yield per recruit is similar, calculated as
+
+$$YPR = \sum_{i=1}^{\omega}w_in_iq_iu$$
+
+where $ul$ is harvest rate. The output will be a yield in g, subject to fishery selectivity and all of the demographic parameters and relationships defined above.  This equation will require the outputs of most of the equations above.
+
+```{r yield}
+ypr <- function(fish,q.vec,w.vec,n.vec) {
+  y.vec <- sum(w.vec*n.vec*q.vec*fish)
+  return(sum(y.vec)) # total yield
+}
+```
+
+Now we have $SBPR$ and $YPR$, and we can explore the sensitivity of the model to different parameters. For example, with our default values, we can explore what happens to $SBPR$ and $YPR$ at different levels of fishing. Since these are per-recruit values, R=1.
+
+```{r ypr sbpr}
+calc_ypr_sbpr <- function(R=1,max.age=30,surv=0.9, Dinf=9.31,growthrate=0.0926,
+                          shape=-0.3208,fert1=4.5,fert2=7, dw.a=0.0012659, 
+                          dw.b=2.7068, length_mat=7, size.limit=8.3,fish) {
+  # growth params
+  growth.params <- c(Dinf,growthrate,shape)
+  
+  # age classes
+  ages <- 0:max.age
+  
+  # Weight at age
+  w.vec <- weight.at.age(age.vec=ages,g.params=growth.params,dw.a=dw.a,dw.b=dw.b)
+  
+  # Numbers at age
+  n.vec <- pop.size(R=R,fish=fish,surv=surv,g.params=growth.params,
+                    age.vec=ages,size.limit=size.limit)
+  
+  # Maturity at age
+  m.vec <- calc_m(g.params=growth.params,length_mat=length_mat,age.vec=ages)
+  
+  # selectivity/vulnerability
+  q.vec <- sel(g.params=growth.params,age.vec=ages,size.limit = size.limit)
+  
+  # Yield per recruit
+  Y <- ypr(fish=fish,q.vec=q.vec,w.vec=w.vec,n.vec=n.vec)
+  
+  # SBPR
+  SBPR <- sbpr(w.vec,n.vec,m.vec)
+  
+  return(c(Y,SBPR))
+}
+```
+
+For a range of values of harvest rate:
+
+```{r yield curve}
+u <- seq(0,2,by=0.05)
+def_curve <- data.frame(u=u,ypr=NA,sbpr=NA)
+for(i in 1:nrow(def_curve)) {
+  calc <- calc_ypr_sbpr(fish=u[i])
+  def_curve[i,2:3] <- calc
+}
+
+# Plot the results
+par(mfrow=c(2,1), mar=c(3, 4, 2, 2) + 0.1)
+
+plot(def_curve$u,def_curve$ypr,type="l",col="blue",ylab="Yield Per Recruit (g)",
+     xlab="Harvest Rate")
+plot(def_curve$u,def_curve$sbpr,type="l",col="red",ylab="SSB Per Recruit (g)",
+     xlab="Harvest Rate")
+```
+
+## What Might Change? Reduced Survival
+
+Taking this per-recruit analysis as our starting point, we can examine the impact of potential changes in the parameters. Some of these are a result of regulations (e.g., reducing or increasing a size limit), or changing environmental conditions (e.g., warmer water causing a decline in growth rates). Clearly, the overall effect on the population depends upon how fishing mortality, regulations (vulnerability), and species' biology interact. Here I'll just look at a couple of plausible changes, and their effects on the model.
+
+Growth rate of many marine species can change with changing environmental conditions. For sea urchins, one way this could potentially occur is through changes in water temperature. Ebert et al. (1999) studied growth and mortality in *M franciscanus* across almost its entire range, and did not find a consistent latitudinal pattern in growth rates, but did find a pattern in mortality. There was a general increase in mortality rate from north to south, but the authors found that growth could differ as much between adjacent sites (at the same latitude) as between sites more than 20 degrees latitude apart. They argue that relatively higher mortality in southern California could be due to a combination of factors, including temperature stress and increased vulnerability to disease, or increased predation from, e.g., the sheephead (*Semicossyphus pulcher*) or lobster (*Panulirus interruptus*) that do not exist further north. Interestingly, these two effects could be confounding. Lafferty (2004) found that fishing for lobsters can actually *increase* disease epidemics in urchins, as the urchins become more prone to overpopulation, starvation, immune suppression, and therefore disease. In a life-history context, a decrease in predators could then feasibly have either a positive direct effect on urchin survival, *or* an indirect negative effect. In reality, these hypotheses are not mutually exclusive, and in fact, Lafferty (2004) found that increased epidemics did not reduce urchin densities to the extent that predators themselves would.
+
+So, it seems reasonable to suggest that with increased temperatures in the future, along with the likely return of sea otters to Southern California (Lafferty and Tinker 2014), survival of urchins may decrease. We can investigate the effect of this in our model, altering the annual survival parameter:
+
+```{r growth rate change}
+surv_reduction <- seq(1,0.5,by=-0.1) # What happens if survival is reduced by 0-50%?
+
+surv.trials <- list()
+
+# For each value of survival reduction, recalculate the yield curve
+for(i in 1:length(surv_reduction)) {
+  u <- seq(0,2,by=0.05)
+  def_curve <- data.frame(u=u,ypr=NA,sbpr=NA)
+  for(j in 1:nrow(def_curve)) {
+    calc <- calc_ypr_sbpr(fish=u[j],surv = surv*surv_reduction[i])
+    def_curve[j,2:3] <- calc
+  }
+  surv.trials[[i]] <- def_curve
+}
+
+
+## Plot the results 
+par(mfrow=c(1,1))
+cols <- c("blue","red","darkgreen","purple","orange","black")
+
+plot(surv.trials[[1]]$u,surv.trials[[1]]$ypr,type="l",col=cols[1],
+     ylab="Yield Per Recruit (g)",
+     xlab="Harvest Rate",main="Effect of Reduced Survival on YPR",lwd=2)
+
+for(i in 2:length(surv_reduction)) {
+  lines(surv.trials[[i]]$u,surv.trials[[i]]$ypr,col=cols[i],lwd=2)
+}
+
+# Add a legend
+legend("topright",legend=c("0","10","20","30","40","50"),col=cols,lwd=2,
+       title="Surv Reduction (%)",ncol=2,bg="white")
+```
+
+The effect of reduced survival is potentially dramatic. The change does not alter the shape of the $YPR$ curve, but it does substantially reduce the expected yield. With just a ten percent decline in survival rate (based on our default survival of 0.9, that is a decline to 0.81/year), our expected $YPR$ for a moderate harvest rate declines five-fold. The overall productivity of the stock is reduced, which is clearly evident in the analogous $SBPR$ plot.
+
+```{r survival and sbpr}
+par(mfrow=c(1,1))
+
+plot(surv.trials[[1]]$u,surv.trials[[1]]$sbpr,type="l",col=cols[1],
+     ylab="SSB Per Recruit (g)",
+     xlab="Harvest Rate",
+     main="Effect of Reduced Survival on SBPR",lwd=2,ylim=c(0,1000))
+
+for(i in 2:length(surv_reduction)) {
+  lines(surv.trials[[i]]$u,surv.trials[[i]]$sbpr,col=cols[i],lwd=2)
+}
+
+# Add a legend
+legend("topright",legend=c("0","10","20","30","40","50"),col=cols,lwd=2,
+       title="Surv Reduction (%)",ncol=2)
+```
+
+## What Might Change? Growth
+
+If growth is more dependent on site-level characteristics than large-scale patterns, it is hard to predict how it might change in the future. Predation and fishing pressure, along with temperature and food availability, likely determine growth rates at local scales. Bureau (1996) and Edwards and Ebert (1991) found that growth in *M. franciscanus* and the closely related *Strongylocentrotus purpuratus* vary with food availability and spine damage (e.g., as a result of storms or predatory attacks).
+
+However, whether or not we expect a directional change in growth rates in the future, it is nevertheless important to investigate the sensitivity of our model to the growth rate assumption. In other words, if our assumption of growth rate is wrong (which it almost certainly is), how much of a difference does that make in the conclusions we draw? We look at this in a similar manner to survival, varying growth rate parameter $K$ in Richards growth equations by +/- 30 percent.
+
+```{r growth sensitivity}
+growth_change<- seq(1.3,0.7,by=-0.1) # What happens if survival is reduced by 0-50%?
+
+growth.trials <- list()
+
+# For each value of survival reduction, recalculate the yield curve
+for(i in 1:length(growth_change)) {
+  u <- seq(0,2,by=0.05)
+  def_curve <- data.frame(u=u,ypr=NA,sbpr=NA)
+  for(j in 1:nrow(def_curve)) {
+    calc <- calc_ypr_sbpr(fish=u[j],growthrate=growthrate*growth_change[i])
+    def_curve[j,2:3] <- calc
+  }
+  growth.trials[[i]] <- def_curve
+}
+
+
+## Plot the results 
+par(mfrow=c(1,1))
+cols <- c("blue","red","darkgreen","purple","orange","yellow","black")
+
+plot(surv.trials[[1]]$u,growth.trials[[1]]$ypr,type="l",col=cols[1],
+     ylab="Yield Per Recruit (g)",
+     xlab="Harvest Rate",
+     main="Effect of Changed Growth Rate on YPR",lwd=2)
+
+for(i in 2:length(growth_change)) {
+  lines(growth.trials[[i]]$u,growth.trials[[i]]$ypr,col=cols[i],lwd=2)
+}
+
+# Add a legend
+legend("topright",legend=c("30","20","10","0","-10","-20","-30"),col=cols,lwd=2,
+       title="Change in Growth (%)",ncol=2,bg="white")
+```
+
+Perhaps not surprisingly, changing the growth rate has a qualitatively similar effect as changing survival. However, it seems that reductions in survival have a potentially much larger effect. In a way, this makes sense. Changes in growth mean that individual urchins will reach their maximum size faster or slower, but if fishery selectivity is not closely coupled with growth (and especially age/size at maturity), then growth will likely have this sort of proportional effect on $YPR$. In our case, the size limit imposed in the fishery is substantially above the estimated size at sexual maturity, and therefore even if the urchins reach maturity more slowly, they will still likely get a chance to reproduce before being captured by the fishery (low chance of recruitment overfishing). This is not to say that correctly estimated growth rate is not important: clearly, misestimation of Richard's $K$ can substantially alter the magnitude of the results.
+
+## Conclusions
+
+With this simple model, there is still much more that could be done. In per-recruit models like this, you can calculate per-recruit reference points like $F_{40}$, the harvest rate that would produce 40% of unfished SBPR, or $F_{max}$, the harvest rate producing the maximum $YPR$ (which actually, for our default values, does not exist). One could investigate how these reference points change with changes like those described above, in growth, survival, etc. Alternatively, you could also use these models to look at the effects of changes regulations, for example, what happens to equilibrium yield per recruit and spawning biomass per recruit if the size limit is increased or decreased?
+
+Going even further, one could add a recruitment function to this model, and attempt to model not just yield per recruit, but total population abundance and total catch, leading to the calculation of more recognized reference points like maximum sustainable yield and the associated $F_{MSY}$. The effect of changing recruitment in response to environmental changes or management actions could also be investigated, which is impossible in the current per-recruit formulation. Given that recruitment is one of the most difficult quantities to estimate, but is known to rely, in sea urchins, on density and oceanography (currents, temperature, etc.), it may be that taking this kind of model past the current formulation may be worthwhile. It is possible, for example, that large environmental events like El Ninos, and their consequent effects on recruitment in single years, may totally overwhelm population effects on growth and survival. Especially in species like sea urchins, that are immensely fecund broadcast spawners, it is almost certain that any population model that does not consider environmental correlates with recruitment may be inappropriate.
+
+All of that said, I think that the simple model presented here makes some important points. The model is sensitive to changes in difficult-to-measure and variable parameters. A 10 or 20 percent misestimation of growth and/or survival may lead to a very different estimate of stock productivity. But instead of trying to be more and more precise with our estimates of growth and mortality parameters by collecting more data, I think that a more worthwhile endeavour is to think about how to manage uncertainty, especially as the coastal marine environment changes at a rapid rate. In other words, populations of sea urchins, just like any other species, are not perfectly predictable or deterministic, and for managers, the more pertinent questions are those concerned with how to ensure resource productivity and sustainability simultaneously. Models like this simple $YPR$ /$SBPR$ model can help us to scrutinize our assumptions, but they should also encourage us to reevaluate the management of single species that are embedded in dynamic and complex ecosystems.
+
+### References
+
+*Bureau, D. 1996. Relationship between feeding, reproductive condition, jaw size and density in the red sea urchin, Strongylocentrotus franciscanus. MS thesis, Simon Fraser University, Burnaby, BC*
+
+*Campbell, A. 1998. Catch, effort, and quota estimates for the red sea urchin fishery in British Columbia. Can. Tech. Rep. Fish. Aquat. Sci. 2215: 83-109*
+
+*Richards, F. J. 1959. A flexible growth function for empirical use. Journal of Experimental Botany 10, 2: 290-301.*
+
+*Ebert, Thomas A., and M. P. Russell. 1992. Growth and mortality estimates for red sea urchin Strongylocentrotus franciscanus from San Nicolas Island, California." Marine Ecology Progress series 81, 1: 31-41.*
+
+*Ebert, Thomas A., John D. Dixon, Stephen C. Schroeter, Peter E. Kalvass, Neil T. Richmond, W. Alex Bradbury, and Douglas A. Woodby. 1999. Growth and mortality of red sea urchins Strongylocentrotus franciscanus across a latitudinal gradient. Marine Ecology Progress Series 190: 189-209.*
+
+*Lafferty, K. D. 2004. Fishing for lobsters indirectly increases epidemics in sea urchins. Ecological Applications 14:1566–1573.*
+
+*Lafferty, K. D., and M. T. Tinker. 2014. Sea otters are recolonizing southern California in fits and starts. Ecosphere 5:1–11.*
