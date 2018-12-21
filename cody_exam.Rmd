@@ -2,7 +2,10 @@
 title: "Cody Exam Question"
 author: "Owen Liu"
 date: "January 20, 2017"
-output: pdf_document
+output:
+  html_document:
+    toc: true
+    toc_float: true
 ---
 
 ## Age Structured Urchin Population Model
@@ -13,6 +16,17 @@ The red sea urchin *Mesocentrotus franciscanus* (formerly *Strongylocentrotus fr
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(ggplot2)
+
+# plot theme
+plot_theme <-   theme_minimal()+
+  theme(text=element_text(family="sans",size=12,color="black"),
+        legend.text = element_text(size=14),
+        axis.title=element_text(family="sans",size=14),
+        axis.text=element_text(family="sans",size=8),
+        strip.background = element_rect(colour="black"),
+        panel.border = element_rect(color="black",fill=NA))
+
+theme_set(plot_theme)
 ```
 
 
@@ -38,7 +52,7 @@ shape <- -0.3208 #shape parameter
 growth.params <- c(Dinfinity,growthrate,shape) # all params together
 
 # Length at maturity
-length_mat <- 7
+length_mat <- 5.1
 
 # weight-at-size parameters, of the form a*L^b
 dw.a <- 0.0012659
@@ -58,8 +72,12 @@ Dt <- function(Dinf, K, n=shape,age.vec) {Dinf*(1-exp(-K*age.vec))^(-n)}
 # Plot of shape
 growth <- data.frame(age=seq(0,25,by=0.25),Dt=Dt(Dinf=Dinfinity,K=growthrate,n=shape,
                                                  age.vec=seq(0,25,by=0.25)))
-plot(growth$age,growth$Dt,xlab="Age (yr)",ylab="Test Diameter",
-     xlim=c(0,25),ylim=c(1,10),type="l",main="Urchin Growth")
+
+baseline <- growth
+
+ggplot(baseline,aes(age,Dt))+
+  geom_line()+
+  labs(x="Age (yr)",y='Test Diameter',title='Urchin Growth')
 ```
 
 
@@ -98,8 +116,12 @@ weight.at.age <- function(g.params,age.vec,dw.a,dw.b) {
 }
 # with our parameters:
 w.vec <- weight.at.age(age.vec=ages,g.params=growth.params,dw.a=dw.a,dw.b=dw.b)
-plot(ages,w.vec,main="Age vs. Weight",type='l',xlab='Age, years',ylab='Weight(g)',
-     xaxs='i')
+
+baseline <- baseline %>% mutate(weight=weight.at.age(age.vec=age,g.params=growth.params,dw.a,dw.b))
+
+ggplot(baseline,aes(age,weight))+
+  geom_line()+
+  labs(x='Age (yr)',y='Weight(g)',title='Weight at Age')
 ```
 
 ## Maturity
@@ -114,12 +136,17 @@ calc_m <- function(g.params,length_mat,age.vec){
 
 #with our default values
 m.vec <- calc_m(g.params=growth.params,length_mat=length_mat,age.vec=ages)
-plot(ages,m.vec,main="Age vs. Maturity",xlab="Age",ylab="Proportion Mature",type="l")
+
+baseline <- baseline %>% mutate(maturity=calc_m(growth.params,length_mat,age))
+
+ggplot(baseline,aes(age,maturity))+
+  geom_line()+
+  labs(x='Age (yr)',y='Proportion Mature',title='Maturity at Age')
 
 ```
 
 #### Spawning stock biomass per recruit
-Total unfished spawning stock biomass per recruit is just the summed product of weight-at-age and proportional numbers-at-age and maturity-at-age.
+Total unfished spawning stock biomass per recruit is just the summed product of weight-at-age, proportional numbers-at-age and maturity-at-age.
 
 $$SBPR_{0} = \sum_{i=1}^{\omega}w_in_im_i$$
 Using the equation for unfished numbers-at-age above and setting $R_{0}$ to 1, we can use this to calculate $SBPR_{0}$, and then $SSB_{0}$, which is just $SSB_{0} = SBPR_{0} * R$
@@ -148,8 +175,12 @@ sel <- function(g.params,age.vec,size.limit) {
 q.vec <- sel(g.params=growth.params,age.vec=ages,size.limit = size.limit)
 
 # Plot with default values
-plot(0:max.age,q.vec,main="Age vs. Selectivity",type='l',xlab='Age, yr',
-     ylab='Selectivity (proportion)',xaxs='i')
+
+baseline <- baseline %>% mutate(selectivity=sel(growth.params,age,size.limit))
+
+ggplot(baseline,aes(age,selectivity))+
+  geom_line()+
+  labs(x='Age (yr)',y='Selectivity (proportion)',title='Selectivity at Age')
 ```
 
 ## Calculate Population Size 
@@ -175,7 +206,7 @@ pop.size <- function(R,fish, surv,g.params,age.vec,size.limit) {
 }
 
 ## with our parameters:
-p.vec <- pop.size (R=100000,fish=fish,surv=surv,g.params=growth.params,
+p.vec <- pop.size(R=100000,fish=fish,surv=surv,g.params=growth.params,
                    age.vec=ages,size.limit=size.limit)
 plot(0:max.age,p.vec,main="Age vs. Numbers, Harvest Rate = 0",
      type='l',xlab='Age, years',ylab='Number of Individuals', yaxt="n",
